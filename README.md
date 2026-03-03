@@ -1,51 +1,134 @@
-# CUDA and PyTorch Configuration Guide
-## NVIDIA RTX 5060 Ti on Ubuntu 22.04
+# CUDA and PyTorch Setup Guide
+## NVIDIA RTX 5060 Ti — Ubuntu 22.04 LTS — Complete From-Scratch Installation
 
-This document provides a complete installation and configuration guide for setting up CUDA and PyTorch on a system equipped with an NVIDIA GeForce RTX 5060 Ti GPU running Ubuntu 22.04 LTS. It is intended for users performing a first-time setup on this hardware configuration.
+This guide covers the complete installation process for a system with no prior NVIDIA, CUDA, or PyTorch configuration. It is written specifically for the RTX 5060 Ti (Blackwell architecture) on Ubuntu 22.04 LTS and documents real-world issues encountered during setup that are not covered by standard NVIDIA documentation.
+
+> **Source:** This guide was developed through direct troubleshooting of a working RTX 5060 Ti system on Ubuntu 22.04. All steps have been verified on hardware.
 
 ---
 
 ## Table of Contents
 
 1. [System Requirements](#1-system-requirements)
-2. [Driver Verification](#2-driver-verification)
-3. [Environment Variable Verification](#3-environment-variable-verification)
-4. [PyTorch Installation](#4-pytorch-installation)
-5. [Installation Verification](#5-installation-verification)
-6. [Persistence Configuration](#6-persistence-configuration)
-7. [Troubleshooting Reference](#7-troubleshooting-reference)
-8. [Technical Notes](#8-technical-notes)
+2. [Pre-Installation Checks](#2-pre-installation-checks)
+3. [NVIDIA Driver Installation](#3-nvidia-driver-installation)
+4. [CUDA Toolkit 12.8 Installation](#4-cuda-toolkit-128-installation)
+5. [Environment Variable Configuration](#5-environment-variable-configuration)
+6. [PyTorch Installation](#6-pytorch-installation)
+7. [Final Verification](#7-final-verification)
+8. [Persistence Configuration](#8-persistence-configuration)
+9. [Troubleshooting Reference](#9-troubleshooting-reference)
+10. [Technical Notes](#10-technical-notes)
+11. [References](#11-references)
 
 ---
 
 ## 1. System Requirements
 
-| Component | Required Version |
-|-----------|-----------------|
-| Operating System | Ubuntu 22.04 LTS |
-| NVIDIA Driver | 570 or newer |
+| Component | Required |
+|-----------|----------|
+| Operating System | Ubuntu 22.04 LTS (64-bit) |
+| GPU | NVIDIA RTX 5060 Ti (or any Blackwell GPU) |
+| NVIDIA Driver | 570 or newer (590 recommended) |
 | CUDA Toolkit | 12.8 |
 | PyTorch | Nightly build (cu128) |
 | Python | 3.10 |
+| RAM | 8 GB minimum |
 
-### Architecture Notice
+### Important Architecture Notice
 
-The RTX 5060 Ti is based on the **NVIDIA Blackwell architecture (compute capability sm_120)**, released in early 2026. As of this writing, stable PyTorch releases do not yet include compiled kernels for this architecture. The **nightly build** of PyTorch is required. Using the stable release will result in CUDA being reported as unavailable even when all other components are correctly installed.
+The RTX 5060 Ti is based on the **NVIDIA Blackwell architecture (sm_120)**. This architecture requires:
+- Driver version **570 or newer** — older drivers will not detect the GPU at all
+- CUDA **12.8 or newer**
+- **PyTorch nightly builds** — stable PyTorch does not yet include Blackwell GPU kernels as of early 2026
 
 ---
 
-## 2. Driver Verification
+## 2. Pre-Installation Checks
 
-Before proceeding with any software installation, verify that the NVIDIA driver is correctly installed and that the GPU is detected by the system.
+### 2.1 Verify GPU is Detected by the System
 
-### 2.1 Check GPU Detection
+```bash
+lspci | grep -i nvidia
+```
+
+You should see your GPU listed. Example output:
+```
+01:00.0 VGA compatible controller: NVIDIA Corporation Device 2d04 (rev a1)
+```
+
+If nothing appears, there is a hardware or BIOS issue that must be resolved before continuing.
+
+### 2.2 Check GCC is Installed
+
+CUDA requires GCC for kernel module compilation.
+
+```bash
+gcc --version
+```
+
+If not installed:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential gcc linux-headers-$(uname -r)
+```
+
+### 2.3 Remove Conflicting Previous Installations
+
+If this is a completely fresh system, skip this step. If NVIDIA or CUDA packages have been previously installed, clean them first:
+
+```bash
+sudo apt purge nvidia* cuda* -y
+sudo apt autoremove -y
+sudo apt autoclean
+sudo rm -rf /usr/local/cuda*
+```
+
+Reboot after cleaning:
+
+```bash
+sudo reboot
+```
+
+---
+
+## 3. NVIDIA Driver Installation
+
+### 3.1 Check Available Drivers
+
+```bash
+sudo apt install -y ubuntu-drivers-common
+sudo ubuntu-drivers devices
+```
+
+This will show recommended drivers for your GPU. For the RTX 5060 Ti, look for entries showing `nvidia-driver-590-open` or newer.
+
+### 3.2 Install the Driver
+
+Install the recommended open driver (required for Blackwell GPUs):
+
+```bash
+sudo apt install -y nvidia-driver-590-open
+```
+
+> **Why the open driver?** NVIDIA's Blackwell architecture (RTX 50 series) requires the open kernel module. The proprietary (non-open) driver variant does not support sm_120 correctly on Linux.
+
+### 3.3 Reboot
+
+```bash
+sudo reboot
+```
+
+### 3.4 Verify Driver Installation
+
+After rebooting, confirm the driver is loaded and the GPU is visible:
 
 ```bash
 nvidia-smi
 ```
 
-The output should list the RTX 5060 Ti with a driver version of 570 or higher. Example of a successful output:
-
+Expected output:
 ```
 +-----------------------------------------------------------------------------------------+
 | NVIDIA-SMI 590.48.01   Driver Version: 590.48.01   CUDA Version: 13.1                  |
@@ -54,62 +137,90 @@ The output should list the RTX 5060 Ti with a driver version of 570 or higher. E
 +-----------------------------------------------------------------------------------------+
 ```
 
-If this command fails or no GPU is listed, the driver is not correctly installed. Driver installation must be completed before continuing. Drivers older than version 570 do not support the Blackwell architecture and will not detect the RTX 5060 Ti.
-
-### 2.2 Verify Kernel Modules
-
-Confirm that the required NVIDIA kernel modules are loaded:
-
-```bash
-lsmod | grep nvidia
-```
-
-The output must include `nvidia`, `nvidia_uvm`, and `nvidia_modeset`. If any are absent, load them manually:
-
-```bash
-sudo modprobe nvidia_uvm
-sudo modprobe nvidia_modeset
-```
-
-To ensure these modules load automatically on every system boot, proceed to [Section 6](#6-persistence-configuration).
+If `nvidia-smi` fails at this point, the driver installation was unsuccessful. Do not proceed until this works.
 
 ---
 
-## 3. Environment Variable Verification
+## 4. CUDA Toolkit 12.8 Installation
 
-This step is critical and is the most common source of failure on systems that have been previously configured for multi-GPU environments or have followed third-party setup guides.
+These commands follow the official NVIDIA installation method using the network repository.
+Official reference: [https://developer.nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads)
 
-### 3.1 Check the CUDA_VISIBLE_DEVICES Variable
+### 4.1 Add the NVIDIA CUDA Repository
+
+```bash
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+```
+
+### 4.2 Install CUDA Toolkit 12.8
+
+```bash
+sudo apt-get install -y cuda-toolkit-12-8
+```
+
+This installs the CUDA compiler (`nvcc`), libraries, and development tools.
+
+### 4.3 Set Environment Variables
+
+Add the CUDA paths to your shell configuration:
+
+```bash
+echo 'export PATH=/usr/local/cuda-12.8/bin${PATH:+:${PATH}}' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}' >> ~/.bashrc
+echo 'export CUDA_HOME=/usr/local/cuda-12.8' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 4.4 Verify CUDA Installation
+
+```bash
+nvcc --version
+```
+
+Expected output:
+```
+nvcc: NVIDIA (R) Cuda compiler driver
+Cuda compilation tools, release 12.8, V12.8.x
+```
+
+---
+
+## 5. Environment Variable Configuration
+
+This step must not be skipped. An incorrectly set environment variable is the single most common cause of PyTorch failing to detect the GPU even after a correct installation.
+
+### 5.1 Check for CUDA_VISIBLE_DEVICES
 
 ```bash
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 ```
 
-If the output is `CUDA_VISIBLE_DEVICES=` (empty string) or `CUDA_VISIBLE_DEVICES=-1`, this variable is actively hiding all GPU devices from CUDA-dependent applications, including PyTorch. Note that `nvidia-smi` does not respect this variable and will continue to show the GPU correctly, which makes this issue particularly difficult to identify without explicitly checking.
+**If the output is `CUDA_VISIBLE_DEVICES=` (empty string) or `CUDA_VISIBLE_DEVICES=-1`, your GPU will be invisible to PyTorch.**
 
-### 3.2 Locate and Remove the Variable
+This variable, when set to an empty string, instructs the CUDA runtime to expose zero devices to all applications. `nvidia-smi` does not use this variable and will still show the GPU correctly, which makes this issue very difficult to diagnose without explicitly checking.
 
-Search all shell configuration files for the source of this assignment:
+### 5.2 Search for the Variable in All Config Files
 
 ```bash
 grep -r "CUDA_VISIBLE_DEVICES" ~/.bashrc ~/.profile ~/.bash_profile ~/.config/ 2>/dev/null
 ```
 
-Remove all occurrences automatically:
+### 5.3 Remove All Occurrences
 
 ```bash
 sed -i '/CUDA_VISIBLE_DEVICES/d' ~/.bashrc
 ```
 
-Confirm the variable has been removed:
+Confirm it is gone:
 
 ```bash
 grep "CUDA_VISIBLE_DEVICES" ~/.bashrc
+# This should produce no output
 ```
 
-This command should produce no output.
-
-### 3.3 Apply the Change to the Current Session
+### 5.4 Apply to Current Terminal Session
 
 ```bash
 unset CUDA_VISIBLE_DEVICES
@@ -118,17 +229,15 @@ source ~/.bashrc
 
 ---
 
-## 4. PyTorch Installation
+## 6. PyTorch Installation
 
-### 4.1 Remove Existing PyTorch Installation
-
-Any previously installed version of PyTorch must be removed before proceeding. Failure to do so may result in pip skipping the installation entirely if it detects an existing package, regardless of whether the CUDA version is compatible.
+### 6.1 Remove Any Existing PyTorch
 
 ```bash
 pip3 uninstall torch torchvision torchaudio -y
 ```
 
-### 4.2 Install PyTorch Nightly with CUDA 12.8
+### 6.2 Install PyTorch Nightly with CUDA 12.8
 
 ```bash
 pip3 install --pre torch torchvision torchaudio \
@@ -137,52 +246,71 @@ pip3 install --pre torch torchvision torchaudio \
   --no-cache-dir
 ```
 
-**Explanation of flags:**
+**Flag reference:**
 
-| Flag | Purpose |
-|------|---------|
-| `--pre` | Enables pre-release and nightly builds, which include Blackwell (sm_120) kernel support |
-| `--force-reinstall` | Forces pip to replace any existing installation even if the package name matches |
-| `--no-cache-dir` | Prevents pip from using a locally cached version that may be outdated or incompatible |
+| Flag | Reason |
+|------|--------|
+| `--pre` | Required to access nightly builds which include Blackwell (sm_120) kernel support |
+| `--force-reinstall` | Forces pip to replace any existing version even if it considers requirements satisfied |
+| `--no-cache-dir` | Prevents pip from silently using a cached incompatible version |
 
-**Note:** This installation downloads approximately 2-3 GB of packages. Allow sufficient time for the download to complete before proceeding.
+> **Note:** This download is approximately 2-3 GB. Allow several minutes for completion depending on your connection speed.
+
+> **Why not the stable release?** The stable PyTorch cu128 build does not include compiled GPU kernels for sm_120 (Blackwell). Installing it results in a PyTorch that is aware of CUDA 12.8 but cannot execute on the RTX 5060 Ti. The nightly build must be used until official Blackwell support is added to the stable release.
 
 ---
 
-## 5. Installation Verification
+## 7. Final Verification
 
-Run the following command to confirm CUDA is available and the GPU is accessible through PyTorch:
+### 7.1 Test CUDA Availability in PyTorch
 
 ```bash
 python3 -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
 ```
 
 **Expected output:**
-
 ```
 True
 NVIDIA GeForce RTX 5060 Ti
 ```
 
-A result of `True` followed by the GPU name confirms that the installation is complete and functioning correctly. Open a new terminal session and repeat this test to confirm the configuration persists across sessions.
+### 7.2 Test in a New Terminal
+
+Close the current terminal, open a new one, and run the same command again. This confirms the configuration persists across sessions and is not only working due to temporary in-session changes.
+
+### 7.3 Extended Verification
+
+For a more thorough check:
+
+```bash
+python3 -c "
+import torch
+print('PyTorch version :', torch.__version__)
+print('CUDA version     :', torch.version.cuda)
+print('CUDA available   :', torch.cuda.is_available())
+print('Device count     :', torch.cuda.device_count())
+print('Device name      :', torch.cuda.get_device_name(0))
+print('Device memory    :', round(torch.cuda.get_device_properties(0).total_memory / 1e9, 2), 'GB')
+"
+```
 
 ---
 
-## 6. Persistence Configuration
+## 8. Persistence Configuration
 
-To ensure NVIDIA kernel modules are loaded automatically on every system boot, add them to the modules load configuration:
+Ensure NVIDIA kernel modules load automatically on every system boot:
 
 ```bash
 echo -e "nvidia\nnvidia_uvm\nnvidia_modeset" | sudo tee /etc/modules-load.d/nvidia.conf
 ```
 
-Verify the file was written correctly:
+Verify:
 
 ```bash
 cat /etc/modules-load.d/nvidia.conf
 ```
 
-Expected output:
+Expected:
 ```
 nvidia
 nvidia_uvm
@@ -191,43 +319,55 @@ nvidia_modeset
 
 ---
 
-## 7. Troubleshooting Reference
+## 9. Troubleshooting Reference
 
-| Observed Symptom | Probable Cause | Resolution |
-|------------------|---------------|------------|
-| `nvidia-smi: command not found` | NVIDIA driver is not installed | Install NVIDIA driver version 570 or newer |
-| `nvidia-smi` shows GPU but `torch.cuda.is_available()` returns `False` | `CUDA_VISIBLE_DEVICES` set to empty string in shell configuration | Follow Section 3 |
-| `cudaGetDeviceCount returned 100` | `nvidia_uvm` kernel module is not loaded | Run `sudo modprobe nvidia_uvm` |
-| pip prints "Requirement already satisfied" and skips installation | A cached or existing PyTorch version was detected | Re-run Section 4 with `--force-reinstall --no-cache-dir` |
-| PyTorch CUDA works in one terminal but fails in a new session | `CUDA_VISIBLE_DEVICES` is still present in a shell configuration file | Re-examine `.bashrc`, `.profile`, and any conda activation scripts |
-| `RuntimeError: No CUDA GPUs are available` | One or more of the above causes | Follow all sections in order |
-
----
-
-## 8. Technical Notes
-
-This section documents the specific issues encountered during the development of this guide and explains the reasoning behind each step.
-
-### 8.1 Incorrect PyTorch CUDA Version (cu124 vs cu128)
-
-The system had PyTorch 2.6 built against CUDA 12.4 already installed. Running `pip install torch --index-url .../cu128` produced no effect because pip determined the package was already satisfied and skipped the download. The incompatible cu124 build remained in place silently. This is why `--force-reinstall` is a required flag and not optional.
-
-### 8.2 Stable PyTorch Does Not Support Blackwell
-
-As of March 2026, the stable PyTorch release does not include compiled GPU kernels for compute capability sm_120 (Blackwell). Installing the stable cu128 build results in a version that is aware of CUDA 12.8 but cannot execute operations on the RTX 5060 Ti. The nightly build must be used until Blackwell support is incorporated into a stable release.
-
-### 8.3 CUDA_VISIBLE_DEVICES Set to Empty String in Shell Configuration
-
-The variable `export CUDA_VISIBLE_DEVICES=""` had been added to `.bashrc` on two separate occasions, likely copied from online guides describing multi-GPU or containerized environments. An empty string assignment is not equivalent to leaving the variable unset. When set to an empty string, the CUDA runtime interprets this as an instruction to expose zero devices to any application. This caused `torch.cuda.is_available()` to return `False` consistently, regardless of driver or PyTorch version. Because `nvidia-smi` does not use this variable, the GPU appeared healthy in all system-level checks, making the root cause non-obvious. The variable must be explicitly unset and all assignments removed from shell configuration files.
+| Symptom | Probable Cause | Resolution |
+|---------|---------------|------------|
+| `lspci` shows no NVIDIA device | Hardware or BIOS issue | Check PCIe slot, re-seat GPU, verify BIOS settings |
+| `nvidia-smi` command not found | Driver not installed | Complete Section 3 |
+| `nvidia-smi` works but `torch.cuda.is_available()` returns `False` | `CUDA_VISIBLE_DEVICES` set to empty string | Complete Section 5 |
+| `cudaGetDeviceCount returned 100` | `nvidia_uvm` module not loaded | `sudo modprobe nvidia_uvm` |
+| `nvcc` command not found | CUDA paths not set in `.bashrc` | Complete Section 4.3 |
+| pip prints "Requirement already satisfied" and skips | Existing PyTorch version detected by pip | Re-run Section 6.2 — the `--force-reinstall` flag is mandatory |
+| PyTorch CUDA works in one terminal, fails in new sessions | `CUDA_VISIBLE_DEVICES` still present in shell config | Re-run Section 5 in full |
+| `RuntimeError: No CUDA GPUs are available` | One or more of the above | Follow all sections in order from the beginning |
+| Driver installation fails or creates display issues | Conflicting previous driver packages | Complete Section 2.3 (cleanup) before reinstalling |
 
 ---
 
-## References
+## 10. Technical Notes
 
-- [PyTorch - Get Started](https://pytorch.org/get-started/locally/)
-- [NVIDIA CUDA Toolkit Downloads](https://developer.nvidia.com/cuda-downloads)
-- [NVIDIA Driver Downloads](https://www.nvidia.com/en-us/drivers/)
+This section documents the specific issues encountered during the real-world setup that produced this guide.
+
+### 10.1 Driver Version Requirement for Blackwell
+
+The RTX 5060 Ti uses compute capability sm_120, which is only supported from driver version 570 onward. Systems with older drivers will have `nvidia-smi` either fail entirely or show "no devices found", and `lspci` will show an unrecognised device ID. The open kernel module variant is required — the proprietary variant does not correctly support Blackwell on Linux.
+
+### 10.2 PyTorch cu124 Silently Remaining Installed
+
+The system initially had PyTorch 2.6 built against CUDA 12.4 installed. Running:
+```
+pip install torch --index-url .../cu128
+```
+produced the message "Requirement already satisfied" and did nothing. The cu124 build remained. This is why `--force-reinstall` and `--no-cache-dir` are required flags in this guide and not optional suggestions.
+
+### 10.3 Stable PyTorch cu128 Does Not Support Blackwell
+
+Even after correctly installing the cu128 variant of stable PyTorch, the RTX 5060 Ti was not detected. This is because stable PyTorch does not yet compile GPU kernels for sm_120. The nightly build includes these kernels. This will change once NVIDIA Blackwell support is officially incorporated into a stable PyTorch release.
+
+### 10.4 CUDA_VISIBLE_DEVICES Set to Empty String
+
+The variable `export CUDA_VISIBLE_DEVICES=""` was found twice in `.bashrc`, likely added when following online guides for multi-GPU or containerised environments. An empty string is not the same as an unset variable. When set to an empty string, the CUDA runtime treats it as an explicit instruction to make zero devices visible to any application. Because `nvidia-smi` does not consult this variable, the GPU appeared fully operational in system-level checks while being completely invisible to PyTorch. This is an easy mistake to introduce and a difficult one to find without explicitly checking the variable.
+
+---
+
+## 11. References
+
+- [NVIDIA CUDA Downloads](https://developer.nvidia.com/cuda-downloads?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=deb_local)
+- [NVIDIA CUDA Installation Guide for Linux 12.8](https://docs.nvidia.com/cuda/archive/12.8.1/cuda-installation-guide-linux/index.html)
+- [PyTorch — Get Started (Nightly)](https://pytorch.org/get-started/locally/)
 - [CUDA Compatibility Guide](https://docs.nvidia.com/deploy/cuda-compatibility/)
+- [NVIDIA Driver Downloads](https://www.nvidia.com/en-us/drivers/)
 
 ---
 
